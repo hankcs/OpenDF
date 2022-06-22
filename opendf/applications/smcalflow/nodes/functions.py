@@ -1315,6 +1315,53 @@ class FindEvents(Node):
         return False, ee
 
 
+class FindLastEvent(Node):
+    def __init__(self):
+        super().__init__(Event)
+        self.signature.add_sig(posname(1), Node, True, alias='constraint')
+        self.signature.add_sig('tmp', Node, ptags=['omit_dup'])  # tmp is used for debugging - to draw the pruned tree
+
+    def exec(self, all_nodes=None, goals=None):
+        constr = self.input_view('constraint')
+
+        if constr:
+            cp, _ = constr.duplicate_res_tree(keep_turn=True)
+
+            # 1. convert modifiers
+            cp.convert_modifiers(self)  # maybe convert BEFORE copy? <<
+
+            # 2. prune contradictions
+            cp.prune_modifiers()
+        else:
+            cp, _ = self.call_construct('Event?()', self.context)
+
+        if environment_definitions.show_dbg_constr:
+            d, e = self.call_construct('Dummy()', self.context)
+            d.connect_in_out('tmp', self)
+            self.inputs['tmp'].set_result(cp)
+
+        if environment_definitions.event_fallback_force_curr_user:
+            cp, _ = Node.call_construct('AND(%s, Event?(attendees=ANY(Attendee(recipient=Recipient?(id=%d)))))' %
+                                        (id_sexp(cp), storage.get_current_recipient_id()), self.context, register=False)
+
+        if environment_definitions.show_SQL:
+            msg = str(cp.generate_sql().compile(compile_kwargs={"literal_binds": True}))
+            logger.debug('\nSQL statement:\n %s\n', msg)
+            msg = msg.replace("<", "&lt;")
+            msg = msg.replace(">", "&gt;")
+            self.context.add_message(self, MSG_SQL + msg)
+
+        # we want ALL event from the external DB which match the constraint. not just those in the graph.
+        #      and we want to get a fresh copy of these - the DB might have been changed "externally"
+        results = Event.do_fallback_search(cp, all_nodes, goals, do_eval=True)  # , params={"without_curr_user": True})
+
+        if not results:
+            raise EventNotFoundException(self)
+
+        r = node_fact.make_agg(results)
+        r.call_eval(add_goal=False)  # pedantic
+        self.set_result(r)
+
 # ####################################################################################################
 # ############################################## create ##############################################
 
